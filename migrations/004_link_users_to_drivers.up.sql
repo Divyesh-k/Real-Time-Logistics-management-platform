@@ -1,0 +1,3 @@
+ALTER TABLE drivers
+ADD COLUMN user_id UUID UNIQUE
+REFERENCES users(id);
