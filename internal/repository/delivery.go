@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"fmt"
 	"real-time-logistics-management-platform/internal/model"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -195,4 +196,77 @@ func (r *DeliveryRepository) UpdateStatus(
 	}
 
 	return &delivery, nil
+}
+
+func (r *DeliveryRepository) ProcessStatusChange(ctx context.Context, eventId string, deliveryID string, status string) (bool, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+
+	defer tx.Rollback(ctx)
+
+	insertEventQuery := `
+		INSERT INTO processed_events (
+			event_id
+		)
+		VALUES ($1)
+		ON CONFLICT (event_id)
+		DO NOTHING
+	`
+
+	result, err := tx.Exec(
+		ctx,
+		insertEventQuery,
+		eventId,
+	)
+
+	if err != nil {
+		return false, err
+	}
+
+	// Event already processed.
+	if result.RowsAffected() == 0 {
+		return false, nil
+	}
+
+	// -----------------------------------------
+	// 2. Update delivery
+	// -----------------------------------------
+
+	updateDeliveryQuery := `
+		UPDATE deliveries
+		SET
+			status = $1,
+			updated_at = NOW()
+		WHERE id = $2
+	`
+
+	result, err = tx.Exec(
+		ctx,
+		updateDeliveryQuery,
+		status,
+		deliveryID,
+	)
+
+	if err != nil {
+		return false, err
+	}
+
+	// Delivery doesn't exist.
+	if result.RowsAffected() == 0 {
+		return false, fmt.Errorf(
+			"delivery %s not found",
+			deliveryID,
+		)
+	}
+
+	// -----------------------------------------
+	// 3. Commit transaction
+	// -----------------------------------------
+
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
 }

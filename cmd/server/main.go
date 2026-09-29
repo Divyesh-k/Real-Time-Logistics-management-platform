@@ -182,6 +182,7 @@ func main() {
 		"fleetflow-workers",
 		"driver.location.updated",
 		kafkaProducer,
+		kafka.DLQTopic,
 	)
 
 	if err != nil {
@@ -194,28 +195,11 @@ func main() {
 	// Start Kafka Worker
 	// ============================================
 
+	locationProcessor := service.NewDriverLocationProcessor()
+
 	go consumer.Start(
 		ctx,
-		func(
-			ctx context.Context,
-			event kafka.DriverLocationUpdatedEvent,
-		) error {
-
-			log.Printf(
-				"processing location event: event=%s driver=%s lat=%f lon=%f",
-				event.EventID,
-				event.DriverID,
-				event.Latitude,
-				event.Longitude,
-			)
-
-			// ----------------------------------------
-			// Actual background business logic goes here
-			// ----------------------------------------
-
-			// For now we just log the event.
-			return nil
-		},
+		locationProcessor,
 	)
 
 	// ============================================

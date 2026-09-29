@@ -2,7 +2,6 @@ package kafka
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 	"time"
 
@@ -14,13 +13,18 @@ const DLQTopic = "driver.location.updated.dlq"
 type Consumer struct {
 	client   *kgo.Client
 	producer *Producer
+	dlqTopic string
 }
 
+type EventProcessor func(context.Context, *kgo.Record) error
+
 func NewConsumer(
+
 	broker string,
 	group string,
 	topic string,
 	producer *Producer,
+	dlqTopic string,
 ) (*Consumer, error) {
 
 	client, err := kgo.NewClient(
@@ -36,15 +40,13 @@ func NewConsumer(
 	return &Consumer{
 		client:   client,
 		producer: producer,
+		dlqTopic: dlqTopic,
 	}, nil
 }
 
 func (c *Consumer) Start(
 	ctx context.Context,
-	process func(
-		context.Context,
-		DriverLocationUpdatedEvent,
-	) error,
+	process EventProcessor,
 ) {
 
 	for {
@@ -56,7 +58,9 @@ func (c *Consumer) Start(
 		}
 
 		fetches.EachError(
-			func(s string, i int32, err error) {
+			func(
+				_ string, _ int32, err error,
+			) {
 				log.Printf(
 					"kafka consumer error: %v",
 					err,
@@ -69,70 +73,29 @@ func (c *Consumer) Start(
 		fetches.EachRecord(
 			func(record *kgo.Record) {
 
-				// ---------------------------------------
-				// 1. Decode Kafka message
-				// ---------------------------------------
+				// -----------------------------------
+				// Process with retry
+				// -----------------------------------
 
-				var event DriverLocationUpdatedEvent
-
-				err := json.Unmarshal(
-					record.Value,
-					&event,
-				)
-
-				if err != nil {
-
-					log.Printf(
-						"failed to decode event: %v",
-						err,
-					)
-
-					// Invalid message cannot be processed.
-					// Send it directly to DLQ.
-					if err := c.publishDLQ(
-						ctx,
-						record,
-					); err != nil {
-
-						log.Printf(
-							"failed to publish message to DLQ: %v",
-							err,
-						)
-
-						// IMPORTANT:
-						// Don't commit if DLQ publishing failed.
-						return
-					}
-
-					processed = append(
-						processed,
-						record,
-					)
-
-					return
-				}
-
-				// ---------------------------------------
-				// 2. Process with retry
-				// ---------------------------------------
-
-				err = processWithRetry(
+				err := processWithRetry(
 					ctx,
 					process,
-					event,
+					record,
 				)
 
 				if err != nil {
 
 					log.Printf(
-						"event failed after retries: event=%s error=%v",
-						event.EventID,
+						"event failed after retries: topic=%s partition=%d offset=%d error=%v",
+						record.Topic,
+						record.Partition,
+						record.Offset,
 						err,
 					)
 
-					// -----------------------------------
-					// 3. Send failed event to DLQ
-					// -----------------------------------
+					// --------------------------------
+					// Send to DLQ
+					// --------------------------------
 
 					if err := c.publishDLQ(
 						ctx,
@@ -140,24 +103,24 @@ func (c *Consumer) Start(
 					); err != nil {
 
 						log.Printf(
-							"failed to publish event to DLQ: %v",
+							"failed to publish to DLQ: %v",
 							err,
 						)
 
-						// DLQ failed.
-						// Do NOT commit the original message.
+						// Don't commit.
 						return
 					}
 
 					log.Printf(
-						"event moved to DLQ: event=%s",
-						event.EventID,
+						"event moved to DLQ: topic=%s offset=%d",
+						record.Topic,
+						record.Offset,
 					)
 				}
 
-				// ---------------------------------------
-				// 4. Mark original message as processed
-				// ---------------------------------------
+				// -----------------------------------
+				// Mark Kafka message handled
+				// -----------------------------------
 
 				processed = append(
 					processed,
@@ -166,9 +129,9 @@ func (c *Consumer) Start(
 			},
 		)
 
-		// -------------------------------------------
-		// 5. Commit offsets
-		// -------------------------------------------
+		// ---------------------------------------
+		// Commit offsets
+		// ---------------------------------------
 
 		if len(processed) > 0 {
 
@@ -188,11 +151,8 @@ func (c *Consumer) Start(
 
 func processWithRetry(
 	ctx context.Context,
-	process func(
-		context.Context,
-		DriverLocationUpdatedEvent,
-	) error,
-	event DriverLocationUpdatedEvent,
+	process EventProcessor,
+	record *kgo.Record,
 ) error {
 
 	var err error
@@ -203,7 +163,7 @@ func processWithRetry(
 
 		err = process(
 			ctx,
-			event,
+			record,
 		)
 
 		if err == nil {
@@ -211,8 +171,7 @@ func processWithRetry(
 		}
 
 		log.Printf(
-			"event processing failed: event=%s attempt=%d/%d error=%v",
-			event.EventID,
+			"processing failed: attempt=%d/%d error=%v",
 			attempt,
 			maxAttempts,
 			err,
@@ -225,11 +184,9 @@ func processWithRetry(
 		select {
 
 		case <-time.After(time.Second):
-
 			// Retry.
 
 		case <-ctx.Done():
-
 			return ctx.Err()
 		}
 	}
@@ -242,14 +199,9 @@ func (c *Consumer) publishDLQ(
 	record *kgo.Record,
 ) error {
 
-	log.Printf(
-		"publishing message to DLQ: topic=%s",
-		DLQTopic,
-	)
-
 	return c.producer.Publish(
 		ctx,
-		DLQTopic,
+		c.dlqTopic,
 		string(record.Key),
 		record.Value,
 	)
