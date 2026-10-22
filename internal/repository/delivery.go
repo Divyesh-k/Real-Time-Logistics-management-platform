@@ -270,3 +270,96 @@ func (r *DeliveryRepository) ProcessStatusChange(ctx context.Context, eventId st
 	}
 	return true, nil
 }
+
+func (r *DeliveryRepository) UpdateStatusWithOutbox(
+	ctx context.Context,
+	deliveryID string,
+	status string,
+	event *OutboxEvent,
+) (*model.Delivery, error) {
+
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	defer tx.Rollback(ctx)
+
+	// -----------------------------------------
+	// 1. Update delivery
+	// -----------------------------------------
+
+	updateDeliveryQuery := `
+		UPDATE deliveries
+		SET
+			status = $1,
+			updated_at = NOW()
+		WHERE id = $2
+		RETURNING
+			id,
+			driver_id,
+			pickup_address,
+			dropoff_address,
+			status,
+			created_at,
+			updated_at
+	`
+
+	var delivery model.Delivery
+
+	err = tx.QueryRow(
+		ctx,
+		updateDeliveryQuery,
+		status,
+		deliveryID,
+	).Scan(
+		&delivery.ID,
+		&delivery.DriverID,
+		&delivery.PickupAddress,
+		&delivery.DropoffAddress,
+		&delivery.Status,
+		&delivery.CreatedAt,
+		&delivery.UpdatedAt,
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	// -----------------------------------------
+	// 2. Insert outbox event
+	// -----------------------------------------
+
+	insertOutboxQuery := `
+		INSERT INTO outbox_events (
+			event_id,
+			topic,
+			event_key,
+			payload
+		)
+		VALUES ($1, $2, $3, $4)
+	`
+
+	_, err = tx.Exec(
+		ctx,
+		insertOutboxQuery,
+		event.EventID,
+		event.Topic,
+		event.EventKey,
+		event.Payload,
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	// -----------------------------------------
+	// 3. Commit
+	// -----------------------------------------
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+
+	return &delivery, nil
+}

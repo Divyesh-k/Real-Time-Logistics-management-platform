@@ -189,6 +189,8 @@ func processWithRetry(
 		case <-ctx.Done():
 			return ctx.Err()
 		}
+
+	 	default:
 	}
 
 	return err

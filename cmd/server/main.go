@@ -16,6 +16,7 @@ import (
 	"real-time-logistics-management-platform/internal/repository"
 	"real-time-logistics-management-platform/internal/service"
 	"real-time-logistics-management-platform/internal/websocket"
+	"real-time-logistics-management-platform/internal/worker"
 )
 
 func main() {
@@ -106,6 +107,8 @@ func main() {
 			redisClient,
 		)
 
+	outboxRepository := repository.NewOutboxRepository(db)
+
 	// ============================================
 	// Services
 	// ============================================
@@ -191,6 +194,33 @@ func main() {
 
 	defer consumer.Close()
 
+	deliveryStatusWorker := service.NewDeliveryStatusWorker(
+		deliveryRepository,
+	)
+
+	deliveryStatusProcessor := service.NewDeliveryStatusProcessor(
+		deliveryStatusWorker,
+	)
+
+	deliveryConsumer, err := kafka.NewConsumer(
+		cfg.KafkaURL,
+		"fleetflow-delivery-workers",
+		"delivery.status.changed",
+		kafkaProducer,
+		"delivery.status.changed.dlq",
+	)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	defer deliveryConsumer.Close()
+
+	go deliveryConsumer.Start(
+		ctx,
+		deliveryStatusProcessor,
+	)
+
 	// ============================================
 	// Start Kafka Worker
 	// ============================================
@@ -201,6 +231,13 @@ func main() {
 		ctx,
 		locationProcessor,
 	)
+
+	outboxWorker := worker.NewOutboxWorker(
+		outboxRepository,
+		kafkaProducer,
+	)
+
+	go outboxWorker.Start(ctx)
 
 	// ============================================
 	// HTTP Router

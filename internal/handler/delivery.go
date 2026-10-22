@@ -106,14 +106,14 @@ func (h *DeliveryHandler) UpdateStatus(
 	w http.ResponseWriter,
 	r *http.Request,
 ) {
-	id := chi.URLParam(r, "id")
+	deliveryID := chi.URLParam(r, "id")
 
 	var request model.UpdateDeliveryStatusRequest
 
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		http.Error(
 			w,
-			"invalid JSON",
+			"invalid request body",
 			http.StatusBadRequest,
 		)
 		return
@@ -121,7 +121,7 @@ func (h *DeliveryHandler) UpdateStatus(
 
 	delivery, err := h.service.UpdateStatus(
 		r.Context(),
-		id,
+		deliveryID,
 		request.Status,
 	)
 
@@ -134,7 +134,10 @@ func (h *DeliveryHandler) UpdateStatus(
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(
+		"Content-Type",
+		"application/json",
+	)
 
 	json.NewEncoder(w).Encode(delivery)
 }
