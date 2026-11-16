@@ -2,9 +2,12 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"real-time-logistics-management-platform/internal/kafka"
 	"real-time-logistics-management-platform/internal/repository"
+
+	"github.com/twmb/franz-go/pkg/kgo"
 )
 
 type DeliveryStatusWorker struct {
@@ -54,4 +57,29 @@ func (w *DeliveryStatusWorker) Process(
 	}
 
 	return nil
+}
+
+func NewDeliveryStatusProcessor(
+	worker *DeliveryStatusWorker,
+) func(context.Context, *kgo.Record) error {
+
+	return func(
+		ctx context.Context,
+		record *kgo.Record,
+	) error {
+
+		var event kafka.DeliveryStatusChangedEvent
+
+		if err := json.Unmarshal(
+			record.Value,
+			&event,
+		); err != nil {
+			return fmt.Errorf(
+				"decode delivery status event: %w",
+				err,
+			)
+		}
+
+		return worker.Process(ctx, event)
+	}
 }
